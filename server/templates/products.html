@@ -1,0 +1,7 @@
+<div>
+    <script nonce="{{ $.cspNonce }}" async src="https://js.stripe.com/v3/pricing-table.js"></script>
+    <stripe-pricing-table pricing-table-id="{{ ConfigValueString "stripe.pricing_table" }}"
+                          publishable-key="{{ ConfigValueString "stripe.publishable_key" }}"
+                          customer-email="{{ .customer.Email }}">
+    </stripe-pricing-table>
+</div>

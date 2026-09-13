@@ -206,6 +206,17 @@ func (r *Router) SetupRoutes(app *fiber.App) {
 	app.Get("/auth/email/confirm/:token", r.EmailChangeConfirm)
 	app.Post("/auth/email/confirm/:token", r.EmailChangeConfirm)
 
+	// Stripe
+	if viper.GetBool("stripe.enable_subscriptions") {
+		// redirects out to the Stripe customer portal
+		app.Get("/subscriptions", r.RequireLogin, r.ManageSubscriptions)
+	}
+
+	if viper.GetBool("stripe.enable_products") {
+		// shows purchase options
+		app.Get("/products", r.RequireLogin, r.Index)
+	}
+
 	// Password
 	app.Get("/password/change", r.RequireLogin, r.RequireHTMX, r.PasswordChange)
 	app.Post("/password/change", r.RequireLogin, r.RequireHTMX, r.PasswordChange)
@@ -302,6 +313,10 @@ func (r *Router) Index(c *fiber.Ctx) error {
 
 	if path == "account" && viper.GetBool("accounts.enable_subid") {
 		r.subidVars(user.Username, vars)
+	}
+
+	if path == "subscriptions" || path == "products" {
+		r.stripeVars(c, vars)
 	}
 
 	if path == "groups" {

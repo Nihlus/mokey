@@ -559,3 +559,7 @@ denied_part1 = "Access denied: you cannot log into "
 denied_part2 = " via "
 denied_part3 = "."
 matched_rules = "Matched rules"
+
+[stripe]
+subscriptions = "Manage Subscriptions"
+products = "Products"

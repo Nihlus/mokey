@@ -29,8 +29,26 @@ func SecureHeaders(c *fiber.Ctx) error {
 
 	c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderXFrameOptions, "DENY")
+
+	allowedScriptSources := []string{
+		"'self'",
+		"'nonce-" + nonce + "'",
+	}
+
+	allowedFrameSources := []string{
+		"'self'",
+	}
+
+	if c.Path() == "/subscriptions" || c.Path() == "/products" {
+		allowedScriptSources = append(allowedScriptSources, "https://js.stripe.com")
+		allowedFrameSources = append(allowedFrameSources, "https://js.stripe.com")
+	}
+
+	scriptSrc := strings.Join(allowedScriptSources, " ")
+	frameSrc := strings.Join(allowedFrameSources, " ")
+
 	c.Set(fiber.HeaderContentSecurityPolicy,
-		"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'nonce-"+nonce+"'")
+		fmt.Sprintf("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src %s; frame-src %s", scriptSrc, frameSrc))
 
 	// Direct TLS or an X-Forwarded-Proto from a trusted proxy
 	if c.Protocol() == "https" {

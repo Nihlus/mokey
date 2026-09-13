@@ -327,3 +327,22 @@ token = "your-slack-bot-token"
 
 # Additional usernames with admin access regardless of group membership
 # users = ["jdoe"]
+
+#------------------------------------------------------------------------------
+# Stripe
+#------------------------------------------------------------------------------
+[stripe]
+# The secret key used to communicate with Stripe
+# secret_key = "sk_..."
+
+# The publishable key used for frontend authentication with Stripe
+# publishable_key = "pk_..."
+
+# Enable the Manage Subscriptions tab for accessing the billing portal
+# enable_subscriptions = false
+
+# Enable the Products tab for purchasing new items
+# enable_products = false
+
+# The pricing table used for the Products tab
+# pricing_table = "prctbl_..."

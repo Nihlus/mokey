@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+	"github.com/stripe/stripe-go/v86"
 	ipa "github.com/ubccr/goipa"
 )
 
@@ -64,9 +66,37 @@ func (r *Router) isLoggedIn(c *fiber.Ctx) (bool, error) {
 		return false, fmt.Errorf("Failed to refresh FreeIPA user session: %w", err)
 	}
 
+	sc := newStripeClient()
+	customerId, _ := sess.Get(SessionKeyStripeCustomerID).(string)
+
+	var customer *stripe.Customer = nil
+	if customerId == "" {
+		c, err := getOrCreateCustomer(sc, user)
+		if err != nil {
+			return false, fmt.Errorf("Failed to retrieve Stripe customer data: %w", err)
+		}
+
+		customer = c
+	} else {
+		retrieve := &stripe.CustomerRetrieveParams{}
+		c, err := sc.V1Customers.Retrieve(context.TODO(), customerId, retrieve)
+		if err != nil {
+			return false, fmt.Errorf("Failed to retrieve Stripe customer data: %w", err)
+		}
+
+		customer = c
+	}
+
+	customer, err = refreshCustomer(sc, customer, user)
+	if err != nil {
+		return false, fmt.Errorf("Failed to refresh Stripe customer data: %w", err)
+	}
+
 	c.Locals(ContextKeyUsername, username)
 	c.Locals(ContextKeyUser, user)
 	c.Locals(ContextKeyIPAClient, client)
+	c.Locals(ContextKeyStripeClient, sc)
+	c.Locals(ContextKeyStripeCustomer, customer)
 
 	// Update session expiry time
 	sess.SetExpiry(time.Duration(viper.GetInt("server.session_idle_timeout")) * time.Second)

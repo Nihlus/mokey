@@ -21,6 +21,19 @@
 						<i class="fa fa-home text-center me-1"></i> 
 						{{ T "profile.account" }}
 					</a>
+                    {{ if ConfigValueBool "stripe.enable_subscriptions" }}
+                    <a class="nav-link" id="subscriptions" href="/subscriptions" role="tab">
+                        <i class="fa fa-credit-card text-center me-1"></i>
+                        {{ T "stripe.subscriptions" }}
+                        <i class="fa fa-arrow-up-right-from-square text-center me-1"></i>
+                    </a>
+                    {{ end }}
+                    {{ if ConfigValueBool "stripe.enable_products" }}
+                    <a class="nav-link{{ if eq $.path "products" }} active{{end}}" id="products-tab" href="/products" role="tab">
+                        <i class="fa fa-coins text-center me-1"></i>
+                        {{ T "stripe.products" }}
+                    </a>
+                    {{ end }}
 					<a class="nav-link{{ if eq $.path "password" }} active{{end}}" id="password-tab" href="/password" role="tab">
 						<i class="fa fa-lock text-center me-1"></i> 
 						{{ T "common.password" }}
@@ -69,6 +82,10 @@
                 {{ if eq $.path "account" }}
 				<div class="tab-pane fade show active" id="account" role="tabpanel" aria-labelledby="account-tab">
                     {{ template "account.html" . }}
+                </div>
+                {{ else if eq $.path "products" }}
+                <div class="tab-pane fade show active" id="products" role="tabpanel" aria-labelledby="products-tab">
+                    {{ template "products.html" . }}
                 </div>
                 {{ else if eq $.path "password" }}
 				<div class="tab-pane fade show active" id="password" role="tabpanel" aria-labelledby="password-tab">

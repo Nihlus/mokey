@@ -447,3 +447,7 @@ invite_sent = "Uitnodiging verzonden naar"
 title = "Account voltooien"
 intro = "U maakt een account aan voor"
 create_button = "Account aanmaken"
+
+[stripe]
+subscriptions = "Abonnementen Beheren"
+products = "Producten"

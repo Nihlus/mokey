@@ -79,6 +79,8 @@ func SetDefaults() {
 	viper.SetDefault("server.rate_limit_max", 10)
 	viper.SetDefault("server.read_buffer_size", 16384)
 	viper.SetDefault("storage.driver", "memory")
+	viper.SetDefault("stripe.enable_subscriptions", false)
+	viper.SetDefault("stripe.enable_products", false)
 }
 
 func NewServer(address string) (*Server, error) {
