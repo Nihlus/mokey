@@ -11,6 +11,8 @@
 set -e
 
 : "${IPA_ADMIN_PASS:?IPA_ADMIN_PASS is required}"
+: "${STRIPE_PK:?STRIPE_PK is required}"
+: "${STRIPE_SK:?STRIPE_SK is required}"
 
 IPA=ipa.mokey.test
 HOST=$(hostname -f)
@@ -46,7 +48,7 @@ ipa group-add-member admins --users=testadmin 2>/dev/null || true
 
 kdestroy
 
-cat > /etc/mokey/mokey.toml <<'EOF'
+cat > /etc/mokey/mokey.toml <<EOF
 [site]
 name = "Mokey Dev"
 ktuser = "mokey/mokey"
@@ -73,6 +75,16 @@ driver = "memory"
 [admin]
 enabled = true
 group = "admins"
+
+[stripe]
+secret_key = "$STRIPE_SK"
+publishable_key = "$STRIPE_PK"
+
+enable_subscriptions = true
+
+enable_products = true
+pricing_table = "$STRIPE_PRICING_TABLE"
+
 EOF
 
 # SMTP sink: prints every email (incl. invite/reset links) to /tmp/smtp.log
