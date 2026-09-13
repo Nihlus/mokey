@@ -67,8 +67,9 @@ func (r *Router) isLoggedIn(c *fiber.Ctx) (bool, error) {
 	}
 
 	sc := newStripeClient()
-	customerId, _ := sess.Get(SessionKeyStripeCustomerID).(string)
+	c.Locals(ContextKeyStripeClient, sc)
 
+	customerId, _ := sess.Get(SessionKeyStripeCustomerID).(string)
 	var customer *stripe.Customer = nil
 	if customerId == "" {
 		c, err := getOrCreateCustomer(sc, user)
@@ -95,7 +96,6 @@ func (r *Router) isLoggedIn(c *fiber.Ctx) (bool, error) {
 	c.Locals(ContextKeyUsername, username)
 	c.Locals(ContextKeyUser, user)
 	c.Locals(ContextKeyIPAClient, client)
-	c.Locals(ContextKeyStripeClient, sc)
 	c.Locals(ContextKeyStripeCustomer, customer)
 
 	// Update session expiry time

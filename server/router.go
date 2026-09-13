@@ -217,6 +217,8 @@ func (r *Router) SetupRoutes(app *fiber.App) {
 		app.Get("/products", r.RequireLogin, r.Index)
 	}
 
+	app.Post("/stripe/webhook", r.RequireStripeWebhook, r.StripeWebhook)
+
 	// Password
 	app.Get("/password/change", r.RequireLogin, r.RequireHTMX, r.PasswordChange)
 	app.Post("/password/change", r.RequireLogin, r.RequireHTMX, r.PasswordChange)

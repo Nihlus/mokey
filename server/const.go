@@ -13,6 +13,7 @@ const (
 	ContextKeyIPAClient        = "ipa"
 	ContextKeyStripeClient     = "stripe"
 	ContextKeyStripeCustomer   = "stripe-customer"
+	ContextKeyStripeEvent      = "stripe-event"
 	UserCategoryUnverified     = "mokey-user-unverified"
 	UserCategoryPending        = "mokey-user-pending"
 	TokenAccountVerify         = "verify"

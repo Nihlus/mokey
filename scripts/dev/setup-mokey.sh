@@ -79,6 +79,7 @@ group = "admins"
 [stripe]
 secret_key = "$STRIPE_SK"
 publishable_key = "$STRIPE_PK"
+webhook_secret = "$STRIPE_WEBHOOK_SECRET"
 
 enable_subscriptions = true
 

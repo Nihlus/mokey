@@ -8,6 +8,11 @@ import (
 )
 
 func (r *Router) CSRF(c *fiber.Ctx) error {
+	// webhooks are exempt from CSRF checks
+	if c.Path() == "/stripe/webhook" {
+		return c.Next()
+	}
+
 	sess, err := r.session(c)
 	if err != nil {
 		return err
