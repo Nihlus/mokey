@@ -2,13 +2,18 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 	"github.com/stripe/stripe-go/v86"
 )
+
+const IPAEntitlementGroupPrefix = "stripe-entitlement-"
 
 func (r *Router) RequireStripeWebhook(c *fiber.Ctx) error {
 	sc := newStripeClient()
@@ -48,6 +53,15 @@ func (r *Router) RequireStripeWebhook(c *fiber.Ctx) error {
 		}
 
 		c.Locals(ContextKeyStripeCustomer, customer)
+
+		if username, found := customer.Metadata["username"]; found {
+			user, err := r.adminClient.UserShow(username)
+			if err != nil {
+				return fmt.Errorf("failed to retrieve the IPA user associated with a Stripe webhook: %w", err)
+			}
+
+			c.Locals(ContextKeyUser, user)
+		}
 	}
 
 	return c.Next()
@@ -62,46 +76,14 @@ func (r *Router) StripeWebhook(c *fiber.Ctx) error {
 
 	// route the event
 	switch event.Type {
-	case stripe.EventTypeCustomerCreated:
-		customer := &stripe.Customer{}
-		err := customer.UnmarshalJSON(event.Data.Raw)
+	case stripe.EventTypeEntitlementsActiveEntitlementSummaryUpdated:
+		entitlements := &stripe.EntitlementsActiveEntitlementSummary{}
+		err := json.Unmarshal(event.Data.Raw, entitlements)
 		if err != nil {
 			return err
 		}
 
-		return handleCreatedCustomer(event, customer, c)
-	case stripe.EventTypeCustomerSubscriptionCreated:
-		subscription := &stripe.Subscription{}
-		err := subscription.UnmarshalJSON(event.Data.Raw)
-		if err != nil {
-			return err
-		}
-
-		return handleCreatedSubscription(event, subscription, c)
-	case stripe.EventTypeCustomerSubscriptionUpdated:
-		subscription := &stripe.Subscription{}
-		err := subscription.UnmarshalJSON(event.Data.Raw)
-		if err != nil {
-			return err
-		}
-
-		return handleUpdatedSubscription(event, subscription, c)
-	case stripe.EventTypeCustomerSubscriptionDeleted:
-		subscription := &stripe.Subscription{}
-		err := subscription.UnmarshalJSON(event.Data.Raw)
-		if err != nil {
-			return err
-		}
-
-		return handleDeletedSubscription(event, subscription, c)
-	case stripe.EventTypeInvoicePaid:
-		invoice := &stripe.Invoice{}
-		err := invoice.UnmarshalJSON(event.Data.Raw)
-		if err != nil {
-			return err
-		}
-
-		return handleInvoicePaid(event, invoice, c)
+		return r.handleEntitlementSummaryUpdated(entitlements, c)
 	default:
 		log.WithFields(log.Fields{
 			"id":         event.ID,
@@ -112,42 +94,147 @@ func (r *Router) StripeWebhook(c *fiber.Ctx) error {
 	}
 }
 
-func handleCreatedCustomer(event *stripe.Event, customer *stripe.Customer, c *fiber.Ctx) error {
-	log.Info("created customer")
-	log.Info(event)
-	log.Info(customer)
+func (r *Router) handleEntitlementSummaryUpdated(entitlementSummary *stripe.EntitlementsActiveEntitlementSummary, c *fiber.Ctx) error {
+	customer := r.customer(c)
+	sc := r.stripeClient(c)
+
+	var activeEntitlementGroups []string
+	if entitlementSummary.Entitlements.HasMore {
+		list := &stripe.EntitlementsActiveEntitlementListParams{
+			Customer: stripe.String(customer.ID),
+		}
+
+		for entitlement, err := range sc.V1EntitlementsActiveEntitlements.List(context.TODO(), list).All(context.TODO()) {
+			if err != nil {
+				return err
+			}
+
+			groupName, err := r.applyEntitlement(entitlement, c)
+			if err != nil {
+				return err
+			}
+
+			if groupName != "" {
+				activeEntitlementGroups = append(activeEntitlementGroups, groupName)
+			}
+		}
+	} else {
+		for _, entitlement := range entitlementSummary.Entitlements.Data {
+			groupName, err := r.applyEntitlement(entitlement, c)
+			if err != nil {
+				return err
+			}
+
+			if groupName != "" {
+				activeEntitlementGroups = append(activeEntitlementGroups, groupName)
+			}
+		}
+	}
+
+	err := r.removeInactiveEntitlements(activeEntitlementGroups, c)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
 
-func handleCreatedSubscription(event *stripe.Event, subscription *stripe.Subscription, c *fiber.Ctx) error {
-	log.Info("created subscription")
-	log.Info(event)
-	log.Info(subscription)
+func (r *Router) applyEntitlement(entitlement *stripe.EntitlementsActiveEntitlement, c *fiber.Ctx) (string, error) {
+	sc := r.stripeClient(c)
+	ipa := r.adminClient
+	user := r.user(c)
 
-	return nil
+	feature, err := sc.V1EntitlementsFeatures.Retrieve(context.TODO(), entitlement.Feature.ID, &stripe.EntitlementsFeatureRetrieveParams{})
+	if err != nil {
+		return "", err
+	}
+
+	groupName, found := feature.Metadata["ipa_group"]
+	if !found {
+		log.WithFields(log.Fields{
+			"feature": feature,
+		}).Warn("entitlement does not have an associated IPA group - ignoring")
+
+		return "", nil
+	}
+
+	if user.HasGroup(groupName) {
+		// user is already entitled
+		return groupName, nil
+	}
+
+	_, err = groupShow(ipa, groupName)
+	if err != nil {
+		return "", fmt.Errorf("failed to look up an IPA group with the name %s: %w", groupName, err)
+	}
+
+	log.WithFields(log.Fields{
+		"group": groupName,
+	}).Infof("adding entitlement %s to %s", groupName, user.Username)
+
+	err = groupAddMember(ipa, groupName, user.Username)
+	if err != nil {
+		return "", err
+	}
+
+	// TODO: the JSON API doesn't always return an error even if it fails
+	// (such as when trying to manipulate a user Mokey doesn't have access to) - we double-check here
+	user, err = ipa.UserShow(user.Username)
+	if err != nil {
+		return "", err
+	}
+
+	if !user.HasGroup(groupName) {
+		return "", fmt.Errorf(
+			"failed to add entitlement %s to %s for some unknown reason. Check if Mokey has permission to change groups for the user",
+			groupName,
+			user.Username,
+		)
+	}
+
+	return groupName, nil
 }
 
-func handleUpdatedSubscription(event *stripe.Event, subscription *stripe.Subscription, c *fiber.Ctx) error {
-	log.Info("updated subscription")
-	log.Info(event)
-	log.Info(subscription)
+func (r *Router) removeInactiveEntitlements(activeEntitlementGroups []string, c *fiber.Ctx) error {
+	ipa := r.adminClient
+	user := r.user(c)
 
-	return nil
-}
+	for _, groupName := range user.Groups {
+		if !strings.HasPrefix(groupName, IPAEntitlementGroupPrefix) {
+			// not a group related to entitlements; ignore
+			continue
+		}
 
-func handleDeletedSubscription(event *stripe.Event, subscription *stripe.Subscription, c *fiber.Ctx) error {
-	log.Info("deleted subscription")
-	log.Info(event)
-	log.Info(subscription)
+		if slices.Contains(activeEntitlementGroups, groupName) {
+			// this entitlement is active; ignore
+			continue
+		}
 
-	return nil
-}
+		// inactive entitlement; remove
+		log.WithFields(log.Fields{
+			"group": groupName,
+		}).Infof("removing entitlement %s from %s", groupName, user.Username)
 
-func handleInvoicePaid(event *stripe.Event, invoice *stripe.Invoice, c *fiber.Ctx) error {
-	log.Info("invoice paid")
-	log.Info(event)
-	log.Info(invoice)
+		err := groupRemoveMember(ipa, groupName, user.Username)
+		if err != nil {
+			return err
+		}
+
+		// TODO: the JSON API doesn't always return an error even if it fails
+		// (such as when trying to manipulate a user Mokey doesn't have access to) - we double-check here
+		user, err = ipa.UserShow(user.Username)
+		if err != nil {
+			return err
+		}
+
+		if user.HasGroup(groupName) {
+			return fmt.Errorf(
+				"failed to remove entitlement %s from %s for some unknown reason. Check if Mokey has permission to change groups for the user",
+				groupName,
+				user.Username,
+			)
+		}
+	}
 
 	return nil
 }

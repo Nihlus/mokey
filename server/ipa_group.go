@@ -66,7 +66,7 @@ func groupFindManaged(client *ipa.Client) ([]*ipaGroup, error) {
 }
 
 func groupShow(client *ipa.Client, cn string) (*ipaGroup, error) {
-	res, err := ipaSessionRPC(client, "group_show", []string{cn}, map[string]interface{}{"all": true})
+	res, err := ipaRPC(client, "group_show", []string{cn}, map[string]interface{}{"all": true})
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func groupShow(client *ipa.Client, cn string) (*ipaGroup, error) {
 }
 
 func groupAddMember(client *ipa.Client, cn, uid string) error {
-	res, err := ipaSessionRPC(client, "group_add_member", []string{cn}, map[string]interface{}{"user": uid})
+	res, err := ipaRPC(client, "group_add_member", []string{cn}, map[string]interface{}{"user": uid})
 	if err == nil && res != nil {
 		if f := gjson.GetBytes(res.Result.Data, "failed.member.user"); f.Exists() && len(f.Array()) > 0 {
 			return &ipa.IpaError{Code: 2100, Message: f.Array()[0].String()}
@@ -84,7 +84,7 @@ func groupAddMember(client *ipa.Client, cn, uid string) error {
 }
 
 func groupRemoveMember(client *ipa.Client, cn, uid string) error {
-	res, err := ipaSessionRPC(client, "group_remove_member", []string{cn}, map[string]interface{}{"user": uid})
+	res, err := ipaRPC(client, "group_remove_member", []string{cn}, map[string]interface{}{"user": uid})
 	if err == nil && res != nil {
 		if f := gjson.GetBytes(res.Result.Data, "failed.member.user"); f.Exists() && len(f.Array()) > 0 {
 			return &ipa.IpaError{Code: 2100, Message: f.Array()[0].String()}
