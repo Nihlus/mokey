@@ -5,18 +5,14 @@
 package server
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
 	"math/big"
-	"net/http"
 
 	"github.com/go-webauthn/webauthn/protocol/webauthncose"
 	"github.com/tidwall/gjson"
@@ -28,60 +24,6 @@ import (
 // directly, reusing the FreeIPA session of an already authenticated goipa
 // client. Managing your own passkey mappings requires the FreeIPA
 // self-service permission introduced with passkey support in FreeIPA 4.11.
-func ipaSessionRPC(client *ipa.Client, method string, params []string, options map[string]interface{}) (*ipa.Response, error) {
-	if client.SessionID() == "" {
-		return nil, fmt.Errorf("passkey rpc requires an authenticated FreeIPA session")
-	}
-
-	if options == nil {
-		options = map[string]interface{}{}
-	}
-	options["version"] = ipa.IpaClientVersion
-
-	payload := map[string]interface{}{
-		"id":     0,
-		"method": method,
-		"params": []interface{}{params, options},
-	}
-
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", fmt.Sprintf("https://%s/ipa/session/json", client.Host()), bytes.NewBuffer(b))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Referer", fmt.Sprintf("https://%s/ipa/xml", client.Host()))
-	req.Header.Set("Cookie", fmt.Sprintf("ipa_session=%s", client.SessionID()))
-
-	res, err := ipaRPCHTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("IPA passkey RPC failed with HTTP status code: %d", res.StatusCode)
-	}
-
-	rawJSON, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var ipaRes ipa.Response
-	if err := json.Unmarshal(rawJSON, &ipaRes); err != nil {
-		return nil, err
-	}
-	if ipaRes.Error != nil {
-		return nil, ipaRes.Error
-	}
-
-	return &ipaRes, nil
-}
 
 func userAddPasskey(client *ipa.Client, uid, mapping string) error {
 	_, err := ipaSessionRPC(client, "user_add_passkey", []string{uid, mapping}, nil)
