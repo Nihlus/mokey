@@ -66,13 +66,10 @@ func (r *Router) isLoggedIn(c *fiber.Ctx) (bool, error) {
 		return false, fmt.Errorf("Failed to refresh FreeIPA user session: %w", err)
 	}
 
-	sc := newStripeClient()
-	c.Locals(ContextKeyStripeClient, sc)
-
 	customerId, _ := sess.Get(SessionKeyStripeCustomerID).(string)
 	var customer *stripe.Customer = nil
 	if customerId == "" {
-		c, err := getOrCreateCustomer(sc, user)
+		c, err := getOrCreateCustomer(r.stripeClient, user)
 		if err != nil {
 			return false, fmt.Errorf("Failed to retrieve Stripe customer data: %w", err)
 		}
@@ -80,7 +77,7 @@ func (r *Router) isLoggedIn(c *fiber.Ctx) (bool, error) {
 		customer = c
 	} else {
 		retrieve := &stripe.CustomerRetrieveParams{}
-		c, err := sc.V1Customers.Retrieve(context.TODO(), customerId, retrieve)
+		c, err := r.stripeClient.V1Customers.Retrieve(context.TODO(), customerId, retrieve)
 		if err != nil {
 			return false, fmt.Errorf("Failed to retrieve Stripe customer data: %w", err)
 		}
@@ -88,7 +85,7 @@ func (r *Router) isLoggedIn(c *fiber.Ctx) (bool, error) {
 		customer = c
 	}
 
-	customer, err = refreshCustomer(sc, customer, user)
+	customer, err = refreshCustomer(r.stripeClient, customer, user)
 	if err != nil {
 		return false, fmt.Errorf("Failed to refresh Stripe customer data: %w", err)
 	}

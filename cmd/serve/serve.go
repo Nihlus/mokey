@@ -69,5 +69,10 @@ func serve() error {
 		srv.Shutdown(ctx)
 	}()
 
+	err = srv.Startup()
+	if err != nil {
+		return err
+	}
+
 	return srv.Serve()
 }

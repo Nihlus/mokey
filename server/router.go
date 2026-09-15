@@ -13,6 +13,7 @@ import (
 	hydra "github.com/ory/hydra-client-go/v26"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+	"github.com/stripe/stripe-go/v86"
 	ipa "github.com/ubccr/goipa"
 )
 
@@ -24,6 +25,9 @@ type Router struct {
 
 	// Hydra consent app support
 	hydraClient *hydra.APIClient
+
+	// Stripe support
+	stripeClient *stripe.Client
 
 	// Prometheus metrics
 	metrics *Metrics
@@ -88,6 +92,8 @@ func NewRouter(storage fiber.Storage) (*Router, error) {
 
 		r.hydraClient = hydra.NewAPIClient(cfg)
 	}
+
+	r.stripeClient = newStripeClient()
 
 	r.metrics = NewMetrics()
 

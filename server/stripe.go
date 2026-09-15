@@ -25,16 +25,12 @@ func (r *Router) stripeVars(c *fiber.Ctx, vars fiber.Map) {
 	vars["customer"] = r.customer(c)
 }
 
-func (r *Router) stripeClient(c *fiber.Ctx) *stripe.Client {
-	return c.Locals(ContextKeyStripeClient).(*stripe.Client)
-}
-
 func (r *Router) customer(c *fiber.Ctx) *stripe.Customer {
 	return c.Locals(ContextKeyStripeCustomer).(*stripe.Customer)
 }
 
 func (r *Router) ManageSubscriptions(c *fiber.Ctx) error {
-	sc := r.stripeClient(c)
+	sc := r.stripeClient
 	customer := r.customer(c)
 
 	create := &stripe.BillingPortalSessionCreateParams{

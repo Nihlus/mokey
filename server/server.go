@@ -36,6 +36,7 @@ type Server struct {
 	KeyFile       string
 	CertFile      string
 	app           *fiber.App
+	router        *Router
 }
 
 func SetDefaults() {
@@ -87,12 +88,13 @@ func NewServer(address string) (*Server, error) {
 	s := &Server{}
 	s.ListenAddress = address
 
-	app, _, err := newFiber()
+	app, router, err := newFiber()
 	if err != nil {
 		return nil, err
 	}
 
 	s.app = app
+	s.router = router
 
 	return s, nil
 }
@@ -275,4 +277,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	return s.app.Shutdown()
+}
+
+func (s *Server) Startup() error {
+	return s.router.processMissedWebhookEvents()
 }

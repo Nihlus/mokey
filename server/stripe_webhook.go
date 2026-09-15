@@ -6,19 +6,21 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 	"github.com/stripe/stripe-go/v86"
+	ipa "github.com/ubccr/goipa"
 )
 
 const IPAEntitlementGroupPrefix = "stripe-entitlement-"
+const LastProcessedWebhookEventKey = "last-processed-webhook-event"
+const ProcessedWebhookEventKeyPrefix = "processed-webhook-event-"
+const ProcessingWebhookEventKeyPrefix = "processing-webhook-event-"
 
 func (r *Router) RequireStripeWebhook(c *fiber.Ctx) error {
-	sc := newStripeClient()
-	c.Locals(ContextKeyStripeClient, sc)
-
 	payload := c.BodyRaw()
 	header := c.GetReqHeaders()["Stripe-Signature"][0]
 	secret := viper.GetString("stripe.webhook_secret")
@@ -44,26 +46,6 @@ func (r *Router) RequireStripeWebhook(c *fiber.Ctx) error {
 
 	c.Locals(ContextKeyStripeEvent, &event)
 
-	// grab the customer
-	if customerId, found := event.Data.Object["customer"]; found {
-		sc := r.stripeClient(c)
-		customer, err := sc.V1Customers.Retrieve(context.TODO(), customerId.(string), &stripe.CustomerRetrieveParams{})
-		if err != nil {
-			return fmt.Errorf("failed to retrieve the customer associated with a Stripe webhook: %w", err)
-		}
-
-		c.Locals(ContextKeyStripeCustomer, customer)
-
-		if username, found := customer.Metadata["username"]; found {
-			user, err := r.adminClient.UserShow(username)
-			if err != nil {
-				return fmt.Errorf("failed to retrieve the IPA user associated with a Stripe webhook: %w", err)
-			}
-
-			c.Locals(ContextKeyUser, user)
-		}
-	}
-
 	return c.Next()
 }
 
@@ -73,30 +55,125 @@ func (r *Router) stripeEvent(c *fiber.Ctx) *stripe.Event {
 
 func (r *Router) StripeWebhook(c *fiber.Ctx) error {
 	event := r.stripeEvent(c)
+	return r.handleWebhookEvent(r.stripeClient, r.adminClient, event)
+}
 
-	// route the event
+func (r *Router) handleWebhookEvent(sc *stripe.Client, ic *ipa.Client, event *stripe.Event) error {
+	// have we already processed this event?
+	isProcessingOrProcessed, err := r.isEventProcessingOrProcessed(event)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to determine if event %s is being processed or has already been processed: %w",
+			event.ID,
+			err,
+		)
+	}
+
+	if isProcessingOrProcessed {
+		log.WithFields(log.Fields{
+			"id":         event.ID,
+			"event_type": event.Type,
+		}).Warn("already-processed Stripe webhook event ignored")
+
+		return nil
+	}
+
+	err = r.markEventProcessing(event)
+	if err != nil {
+		return fmt.Errorf("failed to mark event %s as being processed: %w", event.ID, err)
+	}
+
 	switch event.Type {
 	case stripe.EventTypeEntitlementsActiveEntitlementSummaryUpdated:
 		entitlements := &stripe.EntitlementsActiveEntitlementSummary{}
-		err := json.Unmarshal(event.Data.Raw, entitlements)
+		err = json.Unmarshal(event.Data.Raw, entitlements)
 		if err != nil {
 			return err
 		}
 
-		return r.handleEntitlementSummaryUpdated(entitlements, c)
+		err = handleEntitlementSummaryUpdated(sc, ic, entitlements)
+		if err != nil {
+			return err
+		}
 	default:
 		log.WithFields(log.Fields{
 			"id":         event.ID,
 			"event_type": event.Type,
 		}).Warn("unknown Stripe webhook event ignored")
-
-		return nil
 	}
+
+	return r.markEventProcessing(event)
 }
 
-func (r *Router) handleEntitlementSummaryUpdated(entitlementSummary *stripe.EntitlementsActiveEntitlementSummary, c *fiber.Ctx) error {
-	customer := r.customer(c)
-	sc := r.stripeClient(c)
+func (r *Router) isEventProcessingOrProcessed(event *stripe.Event) (bool, error) {
+	v, err := r.storage.Get(processedEventKey(event))
+	if err != nil {
+		return false, err
+	}
+
+	if v != nil {
+		return true, nil
+	}
+
+	v, err = r.storage.Get(processingEventKey(event))
+	if err != nil {
+		return false, err
+	}
+
+	if v != nil {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (r *Router) markEventProcessing(event *stripe.Event) error {
+	// get it done in a minute or something gets another bite at the apple
+	err := r.storage.Set(processingEventKey(event), []byte("true"), time.Minute*1)
+	if err != nil {
+		return fmt.Errorf("failed to mark event %s as being processed: %w", event.ID, err)
+	}
+
+	return nil
+}
+
+func (r *Router) markEventProcessed(event *stripe.Event) error {
+	// Stripe discards events after three days, so forget about stuff we've processed after that plus some leeway
+	err := r.storage.Set(processedEventKey(event), []byte("true"), time.Hour*80)
+	if err != nil {
+		return fmt.Errorf("failed to mark event %s as having been processed: %w", event.ID, err)
+	}
+
+	return nil
+}
+
+func processingEventKey(event *stripe.Event) string {
+	return ProcessingWebhookEventKeyPrefix + event.ID + "-" + string(event.Type)
+}
+
+func processedEventKey(event *stripe.Event) string {
+	return ProcessedWebhookEventKeyPrefix + event.ID + "-" + string(event.Type)
+}
+
+func handleEntitlementSummaryUpdated(
+	sc *stripe.Client,
+	ic *ipa.Client,
+	entitlementSummary *stripe.EntitlementsActiveEntitlementSummary,
+) error {
+	// grab the customer
+	customer, err := sc.V1Customers.Retrieve(context.TODO(), entitlementSummary.Customer, &stripe.CustomerRetrieveParams{})
+	if err != nil {
+		return fmt.Errorf("failed to retrieve the customer associated with a Stripe webhook: %w", err)
+	}
+
+	var user *ipa.User
+	if username, found := customer.Metadata["username"]; found {
+		user, err = ic.UserShow(username)
+	}
+
+	if user == nil || err != nil {
+		return fmt.Errorf("failed to retrieve the IPA user associated with a Stripe webhook: %w", err)
+	}
 
 	var activeEntitlementGroups []string
 	if entitlementSummary.Entitlements.HasMore {
@@ -109,7 +186,7 @@ func (r *Router) handleEntitlementSummaryUpdated(entitlementSummary *stripe.Enti
 				return err
 			}
 
-			groupName, err := r.applyEntitlement(entitlement, c)
+			groupName, err := applyEntitlement(sc, ic, user, entitlement)
 			if err != nil {
 				return err
 			}
@@ -120,7 +197,7 @@ func (r *Router) handleEntitlementSummaryUpdated(entitlementSummary *stripe.Enti
 		}
 	} else {
 		for _, entitlement := range entitlementSummary.Entitlements.Data {
-			groupName, err := r.applyEntitlement(entitlement, c)
+			groupName, err := applyEntitlement(sc, ic, user, entitlement)
 			if err != nil {
 				return err
 			}
@@ -131,7 +208,7 @@ func (r *Router) handleEntitlementSummaryUpdated(entitlementSummary *stripe.Enti
 		}
 	}
 
-	err := r.removeInactiveEntitlements(activeEntitlementGroups, c)
+	err = removeInactiveEntitlements(ic, user, activeEntitlementGroups)
 	if err != nil {
 		return err
 	}
@@ -139,12 +216,18 @@ func (r *Router) handleEntitlementSummaryUpdated(entitlementSummary *stripe.Enti
 	return nil
 }
 
-func (r *Router) applyEntitlement(entitlement *stripe.EntitlementsActiveEntitlement, c *fiber.Ctx) (string, error) {
-	sc := r.stripeClient(c)
-	ipa := r.adminClient
-	user := r.user(c)
+func applyEntitlement(
+	sc *stripe.Client,
+	ic *ipa.Client,
+	user *ipa.User,
+	entitlement *stripe.EntitlementsActiveEntitlement,
+) (string, error) {
+	feature, err := sc.V1EntitlementsFeatures.Retrieve(
+		context.TODO(),
+		entitlement.Feature.ID,
+		&stripe.EntitlementsFeatureRetrieveParams{},
+	)
 
-	feature, err := sc.V1EntitlementsFeatures.Retrieve(context.TODO(), entitlement.Feature.ID, &stripe.EntitlementsFeatureRetrieveParams{})
 	if err != nil {
 		return "", err
 	}
@@ -163,7 +246,7 @@ func (r *Router) applyEntitlement(entitlement *stripe.EntitlementsActiveEntitlem
 		return groupName, nil
 	}
 
-	_, err = groupShow(ipa, groupName)
+	_, err = groupShow(ic, groupName)
 	if err != nil {
 		return "", fmt.Errorf("failed to look up an IPA group with the name %s: %w", groupName, err)
 	}
@@ -172,14 +255,14 @@ func (r *Router) applyEntitlement(entitlement *stripe.EntitlementsActiveEntitlem
 		"group": groupName,
 	}).Infof("adding entitlement %s to %s", groupName, user.Username)
 
-	err = groupAddMember(ipa, groupName, user.Username)
+	err = groupAddMember(ic, groupName, user.Username)
 	if err != nil {
 		return "", err
 	}
 
 	// TODO: the JSON API doesn't always return an error even if it fails
 	// (such as when trying to manipulate a user Mokey doesn't have access to) - we double-check here
-	user, err = ipa.UserShow(user.Username)
+	user, err = ic.UserShow(user.Username)
 	if err != nil {
 		return "", err
 	}
@@ -195,10 +278,7 @@ func (r *Router) applyEntitlement(entitlement *stripe.EntitlementsActiveEntitlem
 	return groupName, nil
 }
 
-func (r *Router) removeInactiveEntitlements(activeEntitlementGroups []string, c *fiber.Ctx) error {
-	ipa := r.adminClient
-	user := r.user(c)
-
+func removeInactiveEntitlements(ic *ipa.Client, user *ipa.User, activeEntitlementGroups []string) error {
 	for _, groupName := range user.Groups {
 		if !strings.HasPrefix(groupName, IPAEntitlementGroupPrefix) {
 			// not a group related to entitlements; ignore
@@ -215,14 +295,14 @@ func (r *Router) removeInactiveEntitlements(activeEntitlementGroups []string, c 
 			"group": groupName,
 		}).Infof("removing entitlement %s from %s", groupName, user.Username)
 
-		err := groupRemoveMember(ipa, groupName, user.Username)
+		err := groupRemoveMember(ic, groupName, user.Username)
 		if err != nil {
 			return err
 		}
 
 		// TODO: the JSON API doesn't always return an error even if it fails
 		// (such as when trying to manipulate a user Mokey doesn't have access to) - we double-check here
-		user, err = ipa.UserShow(user.Username)
+		user, err = ic.UserShow(user.Username)
 		if err != nil {
 			return err
 		}
@@ -233,6 +313,43 @@ func (r *Router) removeInactiveEntitlements(activeEntitlementGroups []string, c 
 				groupName,
 				user.Username,
 			)
+		}
+	}
+
+	return nil
+}
+
+func (r *Router) processMissedWebhookEvents() error {
+	log.Info("checking for missed webhook events")
+
+	b, err := r.storage.Get(LastProcessedWebhookEventKey)
+	if err != nil {
+		return err
+	}
+
+	sc := r.stripeClient
+	list := &stripe.EventListParams{
+		DeliverySuccess: new(false),
+	}
+
+	if b != nil {
+		lastEvent := string(b)
+		list.EndingBefore = stripe.String(lastEvent)
+	}
+
+	for event, err := range sc.V1Events.List(context.TODO(), list).All(context.TODO()) {
+		if err != nil {
+			return err
+		}
+
+		log.WithFields(log.Fields{
+			"id":         event.ID,
+			"event_type": event.Type,
+		}).Info("processing missed event")
+
+		err = r.handleWebhookEvent(sc, r.adminClient, event)
+		if err != nil {
+			return err
 		}
 	}
 
