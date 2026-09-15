@@ -74,11 +74,11 @@ func refreshCustomer(sc *stripe.Client, customer *stripe.Customer, user *ipa.Use
 	return customer, err
 }
 
-func getOrCreateCustomer(sc *stripe.Client, user *ipa.User) (*stripe.Customer, error) {
+func getOrCreateCustomer(sc *stripe.Client, ic *ipa.Client, user *ipa.User) (*stripe.Customer, error) {
 	// see if we can look up an existing customer
 	search := &stripe.CustomerSearchParams{
 		SearchParams: stripe.SearchParams{
-			Query: fmt.Sprintf("metadata[\"uid\"]:\"%s\"", user.Uid),
+			Query: fmt.Sprintf("metadata[\"uid\"]:\"%s\" OR email:\"%s\"", user.Uid, user.Email),
 		},
 	}
 
@@ -95,22 +95,50 @@ func getOrCreateCustomer(sc *stripe.Client, user *ipa.User) (*stripe.Customer, e
 		}
 	}
 
-	if customer != nil {
-		return customer, nil
+	if customer == nil {
+		// no customer? create one
+		create := &stripe.CustomerCreateParams{
+			Email: stripe.String(user.Email),
+			Name:  stripe.String(user.DisplayName),
+			Phone: stripe.String(user.TelephoneNumber),
+			Metadata: map[string]string{
+				"uid":        user.Uid,
+				"gid":        user.Gid,
+				"username":   user.Username,
+				"updated_at": time.Now().UTC().Format(time.RFC3339),
+			},
+		}
+
+		c, err := sc.V1Customers.Create(context.TODO(), create)
+		if err != nil {
+			return nil, err
+		}
+
+		customer = c
 	}
 
-	create := &stripe.CustomerCreateParams{
-		Email: stripe.String(user.Email),
-		Name:  stripe.String(user.DisplayName),
-		Phone: stripe.String(user.TelephoneNumber),
-		Metadata: map[string]string{
-			"uid":        user.Uid,
-			"gid":        user.Gid,
-			"username":   user.Username,
-			"updated_at": time.Now().UTC().Format(time.RFC3339),
-		},
+	// check if the customer is inconsistent with what we'd expect them to be
+	// (i.e, did we create them from Mokey with the correct metadata?). If a
+	// customer is not consistent with Mokey, we have to assume that they may
+	// have bought stuff before we were ready to handle them
+	_, inconsistentCustomer := customer.Metadata["uid"]
+
+	customer, err := refreshCustomer(sc, customer, user)
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh Stripe customer data: %w", err)
 	}
 
-	c, err := sc.V1Customers.Create(context.TODO(), create)
-	return c, err
+	if inconsistentCustomer {
+		// inconsistent customers (i.e., ones who were already known to Stripe
+		// before we knew about them) need their entitlements refreshed as they
+		// may have purchased stuff before creating an account
+		// TODO: I'm not hyper keen on having this as a side effect in here, but
+		// it'll do for now.
+		err = refreshEntitlements(sc, ic, customer, user)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return customer, err
 }

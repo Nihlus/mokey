@@ -175,45 +175,34 @@ func handleEntitlementSummaryUpdated(
 		return fmt.Errorf("failed to retrieve the IPA user associated with a Stripe webhook: %w", err)
 	}
 
+	// we don't use the entitlements that came with the summary here,
+	// because they might have changed or may not be complete. Instead,
+	// we'll query the API for the currently active entitlements.
+	return refreshEntitlements(sc, ic, customer, user)
+}
+
+func refreshEntitlements(sc *stripe.Client, ic *ipa.Client, customer *stripe.Customer, user *ipa.User) error {
 	var activeEntitlementGroups []string
-	if entitlementSummary.Entitlements.HasMore {
-		list := &stripe.EntitlementsActiveEntitlementListParams{
-			Customer: stripe.String(customer.ID),
+	list := &stripe.EntitlementsActiveEntitlementListParams{
+		Customer: stripe.String(customer.ID),
+	}
+
+	for entitlement, err := range sc.V1EntitlementsActiveEntitlements.List(context.TODO(), list).All(context.TODO()) {
+		if err != nil {
+			return err
 		}
 
-		for entitlement, err := range sc.V1EntitlementsActiveEntitlements.List(context.TODO(), list).All(context.TODO()) {
-			if err != nil {
-				return err
-			}
-
-			groupName, err := applyEntitlement(sc, ic, user, entitlement)
-			if err != nil {
-				return err
-			}
-
-			if groupName != "" {
-				activeEntitlementGroups = append(activeEntitlementGroups, groupName)
-			}
+		groupName, err := applyEntitlement(sc, ic, user, entitlement)
+		if err != nil {
+			return err
 		}
-	} else {
-		for _, entitlement := range entitlementSummary.Entitlements.Data {
-			groupName, err := applyEntitlement(sc, ic, user, entitlement)
-			if err != nil {
-				return err
-			}
 
-			if groupName != "" {
-				activeEntitlementGroups = append(activeEntitlementGroups, groupName)
-			}
+		if groupName != "" {
+			activeEntitlementGroups = append(activeEntitlementGroups, groupName)
 		}
 	}
 
-	err = removeInactiveEntitlements(ic, user, activeEntitlementGroups)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return removeInactiveEntitlements(ic, user, activeEntitlementGroups)
 }
 
 func applyEntitlement(
